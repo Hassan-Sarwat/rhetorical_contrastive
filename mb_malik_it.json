@@ -1,0 +1,26 @@
+{
+    "bert_model": "bert-base-uncased",
+    "bert_trainable": false,
+    "model": "BertHSLN",
+    "cacheable_tasks": [],
+    "use_crf": false,
+    "dropout": 0,
+    "word_lstm_hs": 768,
+    "att_pooling_dim_ctx": 200,
+    "att_pooling_num_ctx": 15,
+    "lr": 0.0003,
+    "lr_epoch_decay": 0.9,
+    "max_seq_length": 200,
+    "max_epochs": 80,
+    "early_stopping": 20,
+    "dataset": "malik_it",
+    "nlabels":7,
+    "supervised_loss": true,
+    "memory_bank":true,
+    "weighted": false,
+    "memory_bank_size":200,
+    "single_proto":false,
+    "multi_proto":false,
+    "model_name":"mb_malik_it"
+
+}
