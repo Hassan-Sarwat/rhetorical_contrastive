@@ -73,7 +73,7 @@ optimizer = Adam(model.parameters(), lr=mconfig['lr'])
 epoch_scheduler = StepLR(optimizer, step_size=1, gamma=mconfig["lr_epoch_decay"])
 
 # START TRAINING
-train_epoch_losses = {'loss': [], 'cls':[], 'pc':[], 'sc':[],'cont':[]}
+train_epoch_losses = {'loss': [], 'cls':[], 'pc':[], 'sc':[],'cont':[], 'd':[]}
 train_epoch_acc = []
 train_epoch_f1 = []
 
@@ -84,6 +84,7 @@ dev_epoch_f1 = []
 
 best_dev_f1 = 0
 best_model = None
+cont_loss = 10000000
 
 epochs = mconfig['max_epochs']
 
@@ -98,8 +99,11 @@ for epoch in range(epochs):
     train_epoch_losses['pc'].append(train_loss['pc'])
     train_epoch_losses['sc'].append(train_loss['sc'])
     train_epoch_losses['cont'].append(train_loss['cont'])
+    train_epoch_losses['d'].append(train_loss['d'])
     print('*'*60)
-    print(f"loss {train_loss['loss']} cls_loss {train_loss['cls']}, pc {train_loss['pc']}, sc {train_loss['sc']}")
+    print(f"""loss {train_loss['loss']} cls_loss {train_loss['cls']}, 
+                pc {train_loss['pc']}, sc {train_loss['sc']},
+                d_loss {train_loss['d']}, cont_loss {train_loss['cont']}""")
     if mconfig['supervised_loss']:
         print(f"Epoch {epoch+1}/{epochs} - Training contrastive Loss: {train_loss['cont']:.4f}")
 
@@ -109,7 +113,7 @@ for epoch in range(epochs):
     dev_epoch_f1.append(dev_f1)
     print(f"Epoch {epoch+1}/{epochs} - dev loss {dev_loss} - F1 {dev_f1}")
     test_loss, test_accuracy, predictions, true_labels = testing_step(model, test_dataloader, device)
-    test_f1 = f1_score(predictions, true_labels, average='macro')
+    dev_f1 = f1_score(predictions, true_labels, average='macro')
 
     if dev_f1 > best_dev_f1:
         best_dev_f1 = dev_f1
@@ -119,11 +123,12 @@ for epoch in range(epochs):
 # TESTING
 test_loss, test_accuracy, predictions, true_labels = testing_step(best_model, test_dataloader, device)
 test_f1 = f1_score(predictions, true_labels, average='macro')
+mconfig['model_name'] = f"{mconfig['model_name']}_{np.round(test_f1, 4)}"
 
 # SAVE BEST MODEL
 today = datetime.datetime.now().strftime('%Y/%m/%d')
-save_path = f"/srv/sarwath/{mconfig['model_name']}_{np.round(test_f1, 4)}.pth"
-config_path = f"/srv/sarwath/{mconfig['model_name']}_{np.round(test_f1, 4)}.json"
+save_path = f"/srv/sarwath/{mconfig['model_name']}.pth"
+config_path = f"/srv/sarwath/{mconfig['model_name']}.json"
 print('save_path:',save_path)
 save_model_state_dict(best_model, save_path)
 with open(config_path, "w") as outfile:
