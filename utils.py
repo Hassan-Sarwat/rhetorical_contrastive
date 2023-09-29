@@ -16,7 +16,7 @@ def save_npy(t, path):
 
 def load_checkpoint(path, mconfig, device):
   model = BertHSLN(mconfig, num_labels = mconfig['nlabels'])
-  model.load_state_dict(torch.load(path))
+  model.load_state_dict(torch.load(path),strict=False)
   model.to(device)
   return model
 
