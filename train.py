@@ -48,7 +48,7 @@ def batch_to_tensor(b):
 
 def training_step(model, optimizer, scheduler, data_loader, device, crf = False):
     model.train()  # Set the model to train mode
-    train_loss = {'sc':0, 'pc':0, 'cls': 0, 'loss':0,'cont':0}
+    train_loss = {'sc':0, 'pc':0, 'cls': 0, 'loss':0,'cont':0,'d':0}
     train_correct = 0
     train_total = 0
 
@@ -59,9 +59,10 @@ def training_step(model, optimizer, scheduler, data_loader, device, crf = False)
         batch = batch_to_tensor(batch)
         # handle an empty batch --> error in data preparation
         if batch["input_ids"].shape[1] == 0:
+          print("Skipping an empty batch.")
           continue
 
-
+        optimizer.zero_grad()
         for key, tensor in batch.items():
             batch[key] = tensor.to(device)
         #print(batch['input_ids'].shape)
@@ -77,7 +78,7 @@ def training_step(model, optimizer, scheduler, data_loader, device, crf = False)
         # Calculate loss
         loss = outputs['loss']
         train_loss['loss'] = train_loss['loss'] + loss.detach().item()
-        cont_loss,sc_loss, pc_loss, cls_loss = 0,0,0,0
+        cont_loss,sc_loss, pc_loss, cls_loss,d_loss = 0,0,0,0,0
         if model.sl:
             cont_loss = outputs['cont_loss'] 
             train_loss['cont'] = train_loss['cont'] + cont_loss.detach().item()
@@ -89,23 +90,26 @@ def training_step(model, optimizer, scheduler, data_loader, device, crf = False)
             train_loss['pc'] = train_loss['pc'] + pc_loss.detach().detach().item()
             train_loss['cls'] = train_loss['cls'] + cls_loss.detach().detach().item()
         if model.mp:
-            sc_loss = outputs['sc_loss']
+            sc_loss = outputs['sc_loss'] 
             cls_loss = outputs['cls_loss']
+            d_loss = outputs['d_loss']
             train_loss['sc'] = train_loss['sc'] + sc_loss.detach().item()
             train_loss['cls'] = train_loss['cls'] + cls_loss.detach().detach().item()
+            train_loss['d'] = train_loss['d'] + cls_loss.detach().detach().item()
+
         if batch_idx % 10 == 0:
-          print(f'after {batch_idx} step: loss {loss}, cont_loss {cont_loss}, cls_loss {cls_loss}, pc_loss {pc_loss}, sc_loss {sc_loss}')
+          print(f'after {batch_idx} step: loss {loss}, cont_loss {cont_loss}\n, cls_loss {cls_loss}, pc_loss {pc_loss}, sc_loss {sc_loss}, d_loss {d_loss}')
           
 
 
 
         # Backward pass and optimization
-        loss =  loss + pc_loss + sc_loss + cls_loss + cont_loss
+        loss =  loss + pc_loss + sc_loss + cls_loss + cont_loss + d_loss
         loss.backward()
         # cont_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        optimizer.zero_grad()
+        
 
     scheduler.step()
     # Calculate epoch statistics
@@ -119,6 +123,7 @@ def training_step(model, optimizer, scheduler, data_loader, device, crf = False)
     if model.mp:
         train_loss['cls'] = train_loss['cls'] / len(data_loader)
         train_loss['sc'] = train_loss['sc'] / len(data_loader)
+        train_loss['d'] = train_loss['d']/len(data_loader)
     return train_loss
 
 
@@ -169,6 +174,8 @@ def validation_step(model, data_loader, device):
 
     from sklearn.metrics import classification_report
 
+
+
 def testing_step(model, data_loader, device,):
     model.eval()  # Set the model to evaluation mode
     predictions = []
@@ -208,7 +215,6 @@ def testing_step(model, data_loader, device,):
             predicted_labels = predicted_labels.to('cpu')
             labels = labels.to('cpu')
 
-
             correct = (predicted_labels == labels).sum().item()
             test_correct += correct
             test_total += labels.shape[0]
@@ -222,3 +228,78 @@ def testing_step(model, data_loader, device,):
     print(f"Testing Loss: {test_loss:.4f} - Testing Accuracy: {test_accuracy:.4f}")
     print(classification_report(true_labels, predictions))
     return test_loss, test_accuracy, predictions, true_labels
+
+
+def mapper(data, model_name, data_name):
+    p_m = {0:1,1:6,2:0,3:3,4:4,5:5,6:2}
+    m_p = {0:2,1:0,2:6,3:3,4:4,5:5,6:1}
+    if model_name == 'paheli' and data_name == 'malik':
+        new_data = [p_m[i.item()] for i in data]
+    else:
+        new_data = [m_p[i.item()] for i in data]
+    return new_data
+
+
+def testing_step_cross(model, dataloaders, device, paheli):
+    model.eval()  # Set the model to evaluation mode
+    
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    preds = {}
+    model_name = 'malik'
+    if paheli:
+        model_name = 'paheli'
+    model.to(device)
+    for k in dataloaders.keys():
+        data_loader = dataloaders[k]
+        preds[k] = {}
+        predictions = []
+        true_labels = []
+        print(f"Predicting for {k} data using {model_name} model")
+        print('x'*100)
+        for batch in data_loader:
+            with torch.no_grad(): 
+                batch = batch_to_tensor(batch)
+                for key, tensor in batch.items():
+                    batch[key] = tensor.to(device)
+                labels = batch['label_ids']
+                # Forward pass
+                outputs = model(batch)
+                #max_sequence_length = outputs.size(1)
+                #tlengths = torch.tensor(lengths).unsqueeze(1)
+                #mask = torch.arange(max_sequence_length).unsqueeze(0).to(device) < tlengths
+                #masked_output = outputs[mask]
+                changed = False
+                logits = outputs['logits'].squeeze()
+                predicted_labels = outputs['predicted_label']
+                if  paheli and 'malik' in k:
+                    predicted_labels = mapper(predicted_labels,'paheli','malik')
+                    print('Changing paheli predictions to malik')
+                    print('-'*100)
+                    changed = True
+                elif paheli == False and 'paheli' in k:
+                    predicted_labels = mapper(predicted_labels,'malik','paheli')
+                    print('Changing Malik labels to paheli')
+                    print('-'*100)
+                    changed = True
+
+                # Calculate loss
+                #loss = criterion(masked_output, labels)
+                #test_loss += loss.item()
+
+                # Store predictions and true labels
+                #predicted_labels = masked_output.argmax(dim=-1)
+                if changed:
+                    predictions.extend(predicted_labels)
+                else:
+                    predictions.extend(predicted_labels.cpu().numpy())
+                true_labels.extend(labels.cpu().numpy())
+
+        #predictions = functools.reduce(operator.iconcat, predictions, [])
+        true_labels = functools.reduce(operator.iconcat, true_labels, [])
+        preds[k]['true_labels'] = true_labels
+        preds[k]['predictions'] = predictions
+        
+    return preds
+
