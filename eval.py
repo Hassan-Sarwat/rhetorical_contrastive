@@ -30,6 +30,7 @@ parser.add_argument("config", type=str, help="Name of the config.json file to be
 args = parser.parse_args()
 config_file = args.config
 
+
 # Load the configuration from the JSON file
 mconfig = load_config(config_file)
 print(f'loaded config file {mconfig}')
