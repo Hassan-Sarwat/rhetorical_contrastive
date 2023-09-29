@@ -16,10 +16,11 @@ import numpy as np
 class MultiProtoSimModel(nn.Module):
 
     def __init__(self, rhetorical_role, embedding_width, num_prototypes_per_class):
-        super(ProtoSimModel, self).__init__()
+        super(MultiProtoSimModel, self).__init__()
         
         # Initialize multiple prototypes per class
-        total_prototypes = rhetorical_role * num_prototypes_per_class
+        self.num_prototypes_per_class = num_prototypes_per_class
+        total_prototypes = rhetorical_role * self.num_prototypes_per_class
         self.prototypes = nn.Embedding(total_prototypes, embedding_width)
         
         self.classification_layer = nn.Linear(embedding_width, rhetorical_role)
@@ -31,7 +32,7 @@ class MultiProtoSimModel(nn.Module):
         # Select the set of prototypes for the given role_id
         start_idx = role_id * self.num_prototypes_per_class
         end_idx = (start_idx + self.num_prototypes_per_class)
-        protos = self.prototypes(torch.arange(start_idx, end_idx).to(role_id.device))
+        protos = self.prototypes(torch.arange(start_idx, end_idx).cuda())
 
         # Normalize the prototypes and role embeddings
         protos = F.normalize(protos, p=2, dim=-1)
@@ -39,11 +40,11 @@ class MultiProtoSimModel(nn.Module):
 
         # Calculate distances to all prototypes
         similarity = torch.sum(protos * role_embedding.unsqueeze(1), dim=-1)
-        similarity = torch.exp(similarity)
-        dist = 1 - 1 / (1 + similarity)
+        similarity = torch.exp(similarity)/10
+        dist = 1 / (1 + similarity)
 
         # Find the minimum distance and the index of the nearest prototype
-        min_dist, min_idx = torch.min(dist, dim=1)
+        min_dist, min_idx = torch.max(dist, dim=1)
 
         # Classification prediction using only the nearest prototype
         nearest_proto = protos[min_idx]
@@ -80,9 +81,8 @@ class MultiProtoSimModel(nn.Module):
 
         return diversity_loss
     
-
     def get_classification_loss(self, embeddings, labels):
-        batch_size = embeddings.size(0)
+        batch_size = embeddings.size(1)
         cls_loss = 0.0
         unique_labels = torch.unique(labels)
 
@@ -94,20 +94,25 @@ class MultiProtoSimModel(nn.Module):
             other_embeddings = embeddings[other_mask]
             other_labels = labels[other_mask]
 
-            # Get the minimum distance and the classification score of the nearest prototype
+            # Get the minimum distance and the classification score of the nearest prototype for positive samples
             _, p_predicted_role = self.forward(label_embeddings, label)
-            _, n_predicted_role = self.forward(other_embeddings, other_labels)
-
-            p_label = label.repeat(p_predicted_role.size(0)).type(torch.LongTensor).to(p_predicted_role.device)
-
+            p_label = label.repeat(p_predicted_role.size(0)).type(torch.LongTensor).cuda()
             cls_loss += self.cross_entropy(p_predicted_role, p_label)
-            cls_loss += self.cross_entropy(n_predicted_role, other_labels)
+
+            # Handle negative samples
+            for other_label in torch.unique(other_labels):
+                other_label_mask = other_labels == other_label
+                specific_other_embeddings = other_embeddings[other_label_mask]
+
+                # Get the minimum distance and the classification score of the nearest prototype for negative samples
+                _, n_predicted_role = self.forward(specific_other_embeddings, other_label)
+                cls_loss += self.cross_entropy(n_predicted_role, other_label.repeat(n_predicted_role.size(0)).type(torch.LongTensor).to(n_predicted_role.device))
 
         cls_loss /= batch_size
         return cls_loss
     
     def get_sample_centric_loss(self, embeddings, labels):
-        batch_size = embeddings.size(0)
+        batch_size = embeddings.size(1)
         cluster_loss = 0.0
         unique_labels = torch.unique(labels)
 
@@ -457,7 +462,7 @@ class BertHSLN(torch.nn.Module):
         self.mb = config['memory_bank']
         self.sp = config['single_proto']
         try:
-          self.mp = config['multi_proto']
+          self.mp = config['multi_proto']             
         except:
           self.mp = False 
         if self.sl:
@@ -478,7 +483,8 @@ class BertHSLN(torch.nn.Module):
         if self.sp:
           self.proto_sim_model = ProtoSimModel(self.num_labels, self.lstm_hidden_size * 2)
         if self.mp:
-          self.proto_sim_model = MultiProtoSimModel(self.num_labels, self.lstm_hidden_size * 2)
+          self.num_prototypes_per_class = config['num_prototypes_per_class']
+          self.proto_sim_model = MultiProtoSimModel(self.num_labels, self.lstm_hidden_size * 2, self.num_prototypes_per_class)
 
         self.classifier = torch.nn.Linear(self.lstm_hidden_size * 2, self.num_labels) 
 
@@ -564,6 +570,8 @@ class BertHSLN(torch.nn.Module):
             output['predicted_label'] = predicted_labels
 
             loss = F.cross_entropy(logits, labels)
+            output['loss'] = loss
+            output['logits']=logits
             if self.sp:
               pc_loss = self.proto_sim_model.get_proto_centric_loss(sentence_embeddings_encoded, labels)
               sc_loss = self.proto_sim_model.get_sample_centric_loss(sentence_embeddings_encoded, labels)
@@ -572,17 +580,14 @@ class BertHSLN(torch.nn.Module):
               output['sc_loss'] = sc_loss
               output['cls_loss'] = cls_loss
             elif self.mp:
-              pc_loss = self.proto_sim_model.get_proto_centric_loss(sentence_embeddings_encoded, labels)
               sc_loss = self.proto_sim_model.get_sample_centric_loss(sentence_embeddings_encoded, labels)
               cls_loss = self.proto_sim_model.get_classification_loss(sentence_embeddings_encoded, labels)
+              d_loss = self.proto_sim_model.get_diversity_loss()
             
-              output['loss'] = loss
-              output['sc_loss'] = sc_loss
+              output['sc_loss'] = sc_loss * 10.0
               output['cls_loss'] = cls_loss
+              output['d_loss'] = d_loss
 
-
-            output['loss'] = loss
-            output['logits']=logits
           else:
             logits = logits.squeeze()
             predicted_labels = torch.argmax(logits, dim=1)
